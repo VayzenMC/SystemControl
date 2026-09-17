@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <title>XNS Remote Control Center</title>
+    <style>
+        body { font-family: 'Courier New', Courier, monospace; background: #0d1117; color: #c9d1d9; margin: 0; padding: 20px; }
+        h1 { color: #58a6ff; margin-top: 0; }
+        .container { display: flex; gap: 20px; height: 85vh; }
+        
+        /* Chap ustun: Qurilmalar ro'yxati */
+        .sidebar { width: 300px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; overflow-y: auto; flex-shrink: 0; }
+        .device-item { padding: 12px; margin-bottom: 8px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; cursor: pointer; transition: 0.2s; }
+        .device-item:hover { background: #30363d; border-color: #58a6ff; }
+        .device-item.active { background: #1f6feb; border-color: #388bfd; color: white; }
+        .status-dot { height: 10px; width: 10px; background-color: #8b949e; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-dot.online { background-color: #3fb950; box-shadow: 0 0 6px #3fb950; }
+
+        /* O'ng ustun: Tanlangan qurilma terminali */
+        .main-content { flex-grow: 1; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; }
+        .placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: #8b949e; font-size: 18px; text-align: center; }
+        
+        .terminal-box { flex-grow: 1; background: #000; border: 1px solid #30363d; border-radius: 6px; padding: 15px; color: #00ff00; font-family: monospace; overflow-y: auto; white-space: pre-wrap; margin-bottom: 15px; font-size: 14px; }
+        
+        .control-form { display: flex; gap: 10px; }
+        input[type="text"], input[type="password"] { padding: 12px; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; font-family: monospace; border-radius: 6px; }
+        input[type="text"] { flex-grow: 1; }
+        input[type="password"] { width: 180px; }
+        button { padding: 12px 24px; background: #238636; color: white; border: none; cursor: pointer; border-radius: 6px; font-weight: bold; font-family: monospace; }
+        button:hover { background: #2ea043; }
+        
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <h1>⚡ XNS Remote Control Center ⚡</h1>
+
+    <div class="container">
+        <!-- Qurilmalar ro'yxati (Chap tomon) -->
+        <div class="sidebar">
+            <h3 style="margin-top:0; color: #58a6ff;">Qurilmalar</h3>
+            {% for device in devices %}
+            <div class="device-item" data-id="{{ device.id }}" onclick="selectDevice('{{ device.id }}', '{{ device.name }}', '{{ device.device_token }}', '{% if device.is_online %}Online{% else %}Offline{% endif %} ')" id="dev-card-{{ device.id }}">
+                <div>
+                    <span class="status-dot {% if device.is_online %}online{% endif %}"></span>
+                    <b>{{ device.name }}</b>
+                </div>
+                <div style="font-size: 11px; color: #8b949e; margin-top: 4px; overflow: hidden; text-overflow: ellipsis;">{{ device.device_token }}</div>
+            </div>
+            {% empty %}
+            <p style="color: #8b949e; text-align: center;">Qurilmalar ulanmagan.</p>
+            {% endfor %}
+        </div>
+
+        <!-- Katta Terminal va Boshqaruv (O'ng tomon) -->
+        <div class="main-content">
+            <div id="no-selection" class="placeholder">
+                👈 Chap tarafdan boshqarish uchun bitta qurilmani tanlang
+            </div>
+
+            <div id="active-terminal-pane" class="hidden" style="display: flex; flex-direction: column; height: 100%;">
+                <div style="margin-bottom: 15px; border-bottom: 1px solid #30363d; padding-bottom: 10px;">
+                    <h2 id="selected-device-name" style="margin: 0; color: #58a6ff;">-</h2>
+                    <span style="font-size: 12px; color: #8b949e;">Token: <code id="selected-device-token">-</code></span>
+                </div>
+
+                <h4>Terminal Natijasi:</h4>
+                <div class="terminal-box" id="terminal-output">
+                    Buyruq kutilmoqda...
+                </div>
+
+                <form id="command-form" class="control-form" onsubmit="sendCommand(event)">
+                    {% csrf_token %}
+                    <input type="hidden" name="device_id" id="form-device-id">
+                    <input type="text" name="command_text" id="command-input" placeholder="Buyruq kiriting (masalan: dir, ipconfig)..." required autocomplete="off">
+                    <input type="password" name="password" id="password-input" placeholder="PC Paroli (agar kerak bo'lsa)" autocomplete="off">
+                    <button type="submit">Yuborish</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentDeviceId = null;
+
+        function selectDevice(id, name, token, status) {
+            currentDeviceId = id;
+            document.getElementById('form-device-id').value = id;
+            document.getElementById('selected-device-name').innerText = "💻 " + name + " (" + status + ")";
+            document.getElementById('selected-device-token').innerText = token;
+            
+            // UI o'tish
+            document.getElementById('no-selection').style.display = 'none';
+            document.getElementById('active-terminal-pane').style.display = 'flex';
+
+            // Stilni yangilash
+            document.querySelectorAll('.device-item').forEach(el => el.classList.remove('active'));
+            let activeCard = document.getElementById('dev-card-' + id);
+            if (activeCard) activeCard.classList.add('active');
+
+            fetchTerminalData();
+        }
+
+        // Sahifani yangilamasdan buyruq yuborish (AJAX)
+        function sendCommand(event) {
+            event.preventDefault();
+            if (!currentDeviceId) return;
+
+            let formData = new FormData(document.getElementById('command-form'));
+
+            fetch(window.location.href, {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            }).then(response => {
+                if (response.ok) {
+                    document.getElementById('command-input').value = ''; // Inputni tozalash
+                    fetchTerminalData(); // Darhol natijani tekshirish
+                }
+            }).catch(err => console.error('Xatolik:', err));
+        }
+
+        // Faqat tanlangan qurilma terminalini yangilab turish
+        function fetchTerminalData() {
+            if (!currentDeviceId) return;
+
+            fetch(window.location.href)
+                .then(response => response.text())
+                .then(html => {
+                    let parser = new DOMParser();
+                    let doc = parser.parseFromString(html, 'text/html');
+                    
+                    // Serverdan kelgan HTML ichidan o'sha qurilmaning terminal qismini qidirib topamiz
+                    // Buning uchun har bir qurilma uchun alohida yashirin elementlar yoki serverdan JSON olish yaxshi,
+                    // lekin hozirgi holatda o'sha qurilmaning oxirgi buyrug'ini topamiz.
+                });
+        }
+
+        // Har 3 sekundda ma'lumotlarni yangilab turish (Long polling o'rniga oddiy interval)
+        setInterval(function() {
+            if (!currentDeviceId) return;
+
+            fetch(window.location.href)
+                .then(response => response.text())
+                .then(html => {
+                    let parser = new DOMParser();
+                    let doc = parser.parseFromString(html, 'text/html');
+                    
+                    // Yangi sahifadagi barcha qurilma kartalarini solishtirib yangilash mumkin
+                    // Yoki hozircha eng oddiy ishlaydigan usul:
+                });
+        }, 3000);
+    </script>
+</body>
+</html>
